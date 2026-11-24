@@ -912,7 +912,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
   <script type="module">
     import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+    import { initializeFirestore, getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
     // 若使用者自行貼入 Firebase Config 並匯出 HTML，會自動嵌入於此變數
     const EMBEDDED_FIREBASE_CONFIG = {"apiKey":"AIzaSyB8sqbMSI1gnd1DH4qzpcC8YYH3mTKODC4","authDomain":"tiora-e544e.firebaseapp.com","databaseURL":"https://tiora-e544e-default-rtdb.firebaseio.com","projectId":"tiora-e544e","storageBucket":"tiora-e544e.firebasestorage.app","messagingSenderId":"95036087525","appId":"1:95036087525:web:de84e6a4329256bec6480c","measurementId":"G-080R7BYF9F"};
@@ -1139,7 +1139,11 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         const existingApp = getApps().find(a => a.name === appName);
         const app = existingApp ? existingApp : initializeApp(activeConfig, appName);
         state.auth = getAuth(app);
-        state.db = getFirestore(app);
+        try {
+          state.db = initializeFirestore(app, { experimentalForceLongPolling: true });
+        } catch (fsErr) {
+          state.db = getFirestore(app);
+        }
 
         // 遵守規則 3：先完成驗證再存取 Firestore
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && envSource === 'platform') {
