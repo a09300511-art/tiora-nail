@@ -910,10 +910,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
        Firebase Firestore 即時同步與核心應用程式邏輯
        ========================================== -->
   <script>
-    // 若使用者自行貼入 Firebase Config 並匯出 HTML，會自動嵌入於此變數
     const EMBEDDED_FIREBASE_CONFIG = {"apiKey":"AIzaSyB8sqbMSI1gnd1DH4qzpcC8YYH3mTKODC4","authDomain":"tiora-e544e.firebaseapp.com","databaseURL":"https://tiora-e544e-default-rtdb.firebaseio.com","projectId":"tiora-e544e","storageBucket":"tiora-e544e.firebasestorage.app","messagingSenderId":"95036087525","appId":"1:95036087525:web:de84e6a4329256bec6480c","measurementId":"G-080R7BYF9F"};
 
-    // 預設完整美甲工作室價目表與管理密碼
     const DEFAULT_DATA = {
   "adminPin": "8888",
   "profile": {
@@ -1077,7 +1075,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
   ]
 };
 
-    // 全域應用程式狀態
     const state = {
       data: JSON.parse(JSON.stringify(DEFAULT_DATA)),
       selectedMap: {},
@@ -1086,102 +1083,38 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       toastTimer: null,
       cloudConnected: false,
       activeConfig: null,
-      restBaseUrl: null,
+      rtdbUrl: null,
       pollTimer: null,
       lastUpdatedAt: 0,
       isFirstCloudHydration: true
     };
 
     // ==========================================
-    // 1. 純標準 HTTPS REST API 雲端引擎（完全繞過 SDK WebChannel / gRPC 逾時限制）
+    // 1. Realtime Database 標準 HTTPS REST API 同步引擎
     // ==========================================
-    function toFirestoreValue(val) {
-      if (val === null || val === undefined) return { nullValue: null };
-      if (typeof val === 'boolean') return { booleanValue: val };
-      if (typeof val === 'number') {
-        return Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
-      }
-      if (typeof val === 'string') return { stringValue: val };
-      if (Array.isArray(val)) {
-        return { arrayValue: { values: val.map(toFirestoreValue) } };
-      }
-      if (typeof val === 'object') {
-        const fields = {};
-        for (const k of Object.keys(val)) {
-          fields[k] = toFirestoreValue(val[k]);
-        }
-        return { mapValue: { fields } };
-      }
-      return { stringValue: String(val) };
-    }
-
-    function fromFirestoreValue(fv) {
-      if (!fv || typeof fv !== 'object') return null;
-      if ('stringValue' in fv) return fv.stringValue;
-      if ('integerValue' in fv) return Number(fv.integerValue);
-      if ('doubleValue' in fv) return Number(fv.doubleValue);
-      if ('booleanValue' in fv) return Boolean(fv.booleanValue);
-      if ('nullValue' in fv) return null;
-      if ('arrayValue' in fv) {
-        return (fv.arrayValue.values || []).map(fromFirestoreValue);
-      }
-      if ('mapValue' in fv) {
-        const obj = {};
-        const fields = fv.mapValue.fields || {};
-        for (const k of Object.keys(fields)) {
-          obj[k] = fromFirestoreValue(fields[k]);
-        }
-        return obj;
-      }
-      return null;
-    }
-
-    function parseFirestoreDoc(docJson) {
-      if (!docJson || !docJson.fields) return null;
-      const result = {};
-      for (const k of Object.keys(docJson.fields)) {
-        result[k] = fromFirestoreValue(docJson.fields[k]);
-      }
-      return result;
-    }
-
-    function buildFirestoreDocFields(payloadObj) {
-      const fields = {};
-      for (const k of Object.keys(payloadObj)) {
-        fields[k] = toFirestoreValue(payloadObj[k]);
-      }
-      return { fields };
-    }
-
-    async function fetchCloudDocumentREST(isBackgroundPoll = false) {
-      if (!state.restBaseUrl) return false;
+    async function fetchCloudDocumentRTDB(isBackgroundPoll = false) {
+      if (!state.rtdbUrl) return false;
       try {
-        const url = `${state.restBaseUrl}?key=${encodeURIComponent(state.activeConfig.apiKey)}&_t=${Date.now()}`;
-        const res = await fetch(url, {
+        const res = await fetch(`${state.rtdbUrl}?_t=${Date.now()}`, {
           method: 'GET',
           headers: { 'Accept': 'application/json' }
         });
 
-        if (res.status === 404) {
-          // 雲端尚無文件，初始化寫入預設價目表
-          await writeCloudDocumentREST(true);
-          return true;
-        }
-
         if (!res.ok) {
-          const errText = await res.text();
           let errReason = `HTTP ${res.status}`;
           try {
-            const errObj = JSON.parse(errText);
-            if (errObj.error && errObj.error.status) errReason = errObj.error.status;
-            else if (errObj.error && errObj.error.message) errReason = errObj.error.message.slice(0, 32);
+            const errObj = await res.json();
+            if (errObj && errObj.error) errReason = String(errObj.error).slice(0, 36);
           } catch (e) {}
           throw new Error(errReason);
         }
 
-        const rawDoc = await res.json();
-        const cloudPayload = parseFirestoreDoc(rawDoc);
-        if (!cloudPayload) return false;
+        const cloudPayload = await res.json();
+        if (!cloudPayload || !cloudPayload.services) {
+          // 資料庫尚為空，自動寫入初始完整價目表
+          await writeCloudDocumentRTDB(true);
+          return true;
+        }
 
         const incomingUpdatedAt = Number(cloudPayload.updatedAt || 0);
         const hasNewerData = incomingUpdatedAt > state.lastUpdatedAt || state.isFirstCloudHydration;
@@ -1191,9 +1124,9 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
           state.data = {
             adminPin: cloudPayload.adminPin || "8888",
             profile: cloudPayload.profile || DEFAULT_DATA.profile,
-            categories: cloudPayload.categories || DEFAULT_DATA.categories,
-            services: cloudPayload.services || DEFAULT_DATA.services,
-            rules: cloudPayload.rules || DEFAULT_DATA.rules
+            categories: Array.isArray(cloudPayload.categories) ? cloudPayload.categories : DEFAULT_DATA.categories,
+            services: Array.isArray(cloudPayload.services) ? cloudPayload.services : DEFAULT_DATA.services,
+            rules: Array.isArray(cloudPayload.rules) ? cloudPayload.rules : DEFAULT_DATA.rules
           };
 
           Object.keys(state.selectedMap).forEach(srvId => {
@@ -1215,20 +1148,20 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         state.cloudConnected = true;
         state.isFirstCloudHydration = false;
         setCloudStatusUI('online', '雲端即時同步中');
-        updateCloudConfigModalStatus('已透過標準 HTTPS REST API 成功連線至 Firebase Firestore 雲端資料庫！任何修改都會即時同步給所有客人手機。', true);
+        updateCloudConfigModalStatus('已成功連線至 Firebase Realtime Database 雲端資料庫！任何修改都會即時同步給所有客人手機。', true);
         return true;
       } catch (err) {
-        console.error('REST API 讀取失敗:', err);
+        console.error('RTDB 讀取失敗:', err);
         state.cloudConnected = false;
         const msg = err && err.message ? err.message : '網路異常';
         setCloudStatusUI('error', `連線異常 (${msg})`);
-        updateCloudConfigModalStatus(`REST API 連線發生錯誤：${msg}`, false);
+        updateCloudConfigModalStatus(`Realtime Database 連線發生錯誤：${msg}`, false);
         return false;
       }
     }
 
-    async function writeCloudDocumentREST(isInitialSeed = false) {
-      if (!state.restBaseUrl) return false;
+    async function writeCloudDocumentRTDB(isInitialSeed = false) {
+      if (!state.rtdbUrl) return false;
       const nowTs = Date.now();
       const payload = {
         adminPin: state.data.adminPin || "8888",
@@ -1239,19 +1172,17 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         updatedAt: nowTs
       };
 
-      const url = `${state.restBaseUrl}?key=${encodeURIComponent(state.activeConfig.apiKey)}`;
-      const res = await fetch(url, {
-        method: 'PATCH',
+      const res = await fetch(state.rtdbUrl, {
+        method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildFirestoreDocFields(payload))
+        body: JSON.stringify(payload)
       });
 
       if (!res.ok) {
-        const errText = await res.text();
         let errReason = `HTTP ${res.status}`;
         try {
-          const errObj = JSON.parse(errText);
-          if (errObj.error && errObj.error.status) errReason = errObj.error.status;
+          const errObj = await res.json();
+          if (errObj && errObj.error) errReason = String(errObj.error).slice(0, 36);
         } catch (e) {}
         throw new Error(errReason);
       }
@@ -1260,7 +1191,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       state.cloudConnected = true;
       if (isInitialSeed) state.isFirstCloudHydration = false;
       setCloudStatusUI('online', '雲端即時同步中');
-      updateCloudConfigModalStatus('已透過標準 HTTPS REST API 成功連線至 Firebase Firestore 雲端資料庫！任何修改都會即時同步給所有客人手機。', true);
+      updateCloudConfigModalStatus('已成功連線至 Firebase Realtime Database 雲端資料庫！任何修改都會即時同步給所有客人手機。', true);
       return true;
     }
 
@@ -1270,7 +1201,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         try {
           activeConfig = JSON.parse(__firebase_config);
         } catch (e) {}
-      } else if (EMBEDDED_FIREBASE_CONFIG && EMBEDDED_FIREBASE_CONFIG.apiKey) {
+      } else if (EMBEDDED_FIREBASE_CONFIG && EMBEDDED_FIREBASE_CONFIG.projectId) {
         activeConfig = EMBEDDED_FIREBASE_CONFIG;
       } else {
         const customStr = localStorage.getItem('nail_studio_custom_firebase_cfg');
@@ -1283,50 +1214,48 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         }
       }
 
-      if (!activeConfig || !activeConfig.apiKey || !activeConfig.projectId) {
+      if (!activeConfig || !activeConfig.projectId) {
         setCloudStatusUI('offline', '單機預覽模式');
         updateCloudConfigModalStatus('目前尚未綁定外部 Firebase 專案，請於下方貼入您的 Firebase Config 即可開啟雲端即時同步。', false);
         return;
       }
 
       state.activeConfig = activeConfig;
-      const appId = typeof __app_id !== 'undefined' ? __app_id : 'nail-studio-public';
-      state.restBaseUrl = `https://firestore.googleapis.com/v1/projects/${activeConfig.projectId}/databases/(default)/documents/artifacts/${appId}/public/data/pricelist_config/main`;
+      const baseDbUrl = (activeConfig.databaseURL || `https://${activeConfig.projectId}-default-rtdb.firebaseio.com`).replace(/\/+$/, '');
+      state.rtdbUrl = `${baseDbUrl}/tiora_pricelist_main.json`;
 
       setCloudStatusUI('connecting', '雲端連線中...');
-      await fetchCloudDocumentREST(false);
+      await fetchCloudDocumentRTDB(false);
 
-      // 每 5 秒透過標準 HTTPS GET 自動同步最新雲端變更（輕量且完全不受 WebChannel 阻擋）
       if (state.pollTimer) clearInterval(state.pollTimer);
       state.pollTimer = setInterval(() => {
         if (!state.isAdminMode && document.visibilityState === 'visible') {
-          fetchCloudDocumentREST(true);
+          fetchCloudDocumentRTDB(true);
         }
       }, 5000);
     }
 
-    // 將目前資料即時寫入雲端 Firestore (REST PATCH)
     async function syncDataToCloud(customSuccessMsg = '已同步至雲端，所有客人端已即時更新 ✨') {
       try {
         localStorage.setItem('nail_studio_backup_v5', JSON.stringify(state.data));
       } catch (e) {}
 
-      if (!state.restBaseUrl || !state.activeConfig) {
+      if (!state.rtdbUrl || !state.activeConfig) {
         showToast('已儲存於本地預覽（請設定 Firebase Config 以啟用跨裝置即時同步）');
         return;
       }
 
       try {
         setCloudStatusUI('connecting', '同步上傳中...');
-        await writeCloudDocumentREST(false);
+        await writeCloudDocumentRTDB(false);
         if (customSuccessMsg) {
           showToast(customSuccessMsg);
         }
       } catch (err) {
-        console.error('REST API 寫入雲端失敗:', err);
+        console.error('RTDB 寫入雲端失敗:', err);
         const msg = err && err.message ? err.message : '同步失敗';
         setCloudStatusUI('error', `同步失敗 (${msg})`);
-        showToast(`雲端同步失敗 (${msg})，請確認 Firestore 安全性規則`);
+        showToast(`雲端同步失敗 (${msg})，請確認 Realtime Database 規則`);
       }
     }
 
@@ -1388,12 +1317,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       document.getElementById('input-ig-url').value = p.igUrl || '';
       document.getElementById('input-line-url').value = p.lineUrl || '';
       document.getElementById('input-admin-pin').value = state.data.adminPin || '8888';
-
-      const monogramEl = document.getElementById('studio-monogram');
-      if (monogramEl) {
-        const letters = p.name.replace(/[^A-Za-z]/g, '');
-        monogramEl.innerText = (letters.slice(0, 2) || p.name.slice(0, 2)).toUpperCase();
-      }
     }
 
     function renderAll() {
@@ -1756,7 +1679,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       lines.push(`💅 是否需要卸甲（本店/他店）：`);
       lines.push(`（已詳閱預約須知，謝謝！）`);
 
-      const textToCopy = lines.join('\n');
+      const textToCopy = lines.join('
+');
       const ta = document.createElement('textarea');
       ta.value = textToCopy;
       ta.style.position = 'fixed';
@@ -1882,7 +1806,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       syncDataToCloud('已更新後台管理密碼並同步至雲端');
     }
 
-    // 行內編輯服務項目
     function inlineEditService(serviceId, field, rawVal) {
       const srv = state.data.services.find(s => s.id === serviceId);
       if (!srv) return;
@@ -1974,7 +1897,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       syncDataToCloud('已更新項目排序並同步至雲端');
     }
 
-    // --- 分類管理 ---
     function openCategoryModal(categoryId = null) {
       const modal = document.getElementById('category-detail-modal');
       if (categoryId) {
@@ -2047,7 +1969,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       showToast(`已刪除分類「${cat.title}」並同步雲端`, true);
     }
 
-    // --- 服務項目詳細彈窗 ---
     function toggleInlineNewCatInModal(forceHide = false) {
       const box = document.getElementById('modal-inline-new-cat');
       if (forceHide) {
@@ -2172,7 +2093,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       syncDataToCloud('已儲存項目並同步至雲端 ✨');
     }
 
-    // --- 預約須知操作 ---
     function inlineEditRule(ruleId, field, val) {
       const r = state.data.rules.find(x => x.id === ruleId);
       if (!r) return;
@@ -2208,7 +2128,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       showToast(`已刪除須知「${target.title}」並同步雲端`, true);
     }
 
-    // --- 復原刪除 (Undo) 與重設預設 ---
     function triggerUndoDelete() {
       if (!state.undoSnapshot) return;
       state.data = state.undoSnapshot;
@@ -2229,7 +2148,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       showToast('已恢復為預設價目表（5秒內可點右側復原）', true);
     }
 
-    // --- Firebase 雲端設定精靈 ---
     function openCloudConfigModal() {
       document.getElementById('cloud-config-modal').classList.remove('hidden');
       lucide.createIcons();
@@ -2256,8 +2174,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       }
       try {
         const parsed = JSON.parse(raw);
-        if (!parsed.apiKey || !parsed.projectId) {
-          showToast('Config 格式缺少 apiKey 或 projectId');
+        if (!parsed.projectId) {
+          showToast('Config 格式缺少 projectId');
           return;
         }
         localStorage.setItem('nail_studio_custom_firebase_cfg', JSON.stringify(parsed));
@@ -2293,7 +2211,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         renderAll();
       }
 
-      let htmlOut = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      let htmlOut = '<!DOCTYPE html>
+' + document.documentElement.outerHTML;
       if (configToEmbed) {
         htmlOut = htmlOut.replace(
           /const EMBEDDED_FIREBASE_CONFIG = .*?;/,
@@ -2301,7 +2220,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         );
       }
       htmlOut = htmlOut.replace(
-        /const DEFAULT_DATA = \{[\s\S]*?\n    \};/,
+        /const DEFAULT_DATA = \{[\s\S]*?
+    \};/,
         `const DEFAULT_DATA = ${JSON.stringify(state.data, null, 2)};`
       );
 
@@ -2321,9 +2241,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       showToast('已下載內嵌雲端連線的 index.html！');
     }
 
-    // ==========================================
-    // 7. 分頁切換、主題與安全跳脫函式
-    // ==========================================
     function switchMainTab(tab) {
       const pricelistSec = document.getElementById('view-pricelist');
       const rulesSec = document.getElementById('view-rules');
@@ -2383,7 +2300,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       return String(str || '').replace(/"/g, '&quot;');
     }
 
-    // 將模組內函式掛載至 window 供 HTML inline 事件呼叫
     Object.assign(window, {
       toggleTheme,
       switchMainTab,
