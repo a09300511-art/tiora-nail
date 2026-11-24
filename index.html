@@ -909,11 +909,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
   <!-- ==========================================
        Firebase Firestore 即時同步與核心應用程式邏輯
        ========================================== -->
-  <script type="module">
-    import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-    import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-    import { initializeFirestore, getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+  <script>
     // 若使用者自行貼入 Firebase Config 並匯出 HTML，會自動嵌入於此變數
     const EMBEDDED_FIREBASE_CONFIG = {"apiKey":"AIzaSyB8sqbMSI1gnd1DH4qzpcC8YYH3mTKODC4","authDomain":"tiora-e544e.firebaseapp.com","databaseURL":"https://tiora-e544e-default-rtdb.firebaseio.com","projectId":"tiora-e544e","storageBucket":"tiora-e544e.firebasestorage.app","messagingSenderId":"95036087525","appId":"1:95036087525:web:de84e6a4329256bec6480c","measurementId":"G-080R7BYF9F"};
 
@@ -1089,170 +1085,248 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       undoSnapshot: null,
       toastTimer: null,
       cloudConnected: false,
-      db: null,
-      auth: null,
-      user: null,
-      docRef: null,
-      unsubscribeSnapshot: null,
+      activeConfig: null,
+      restBaseUrl: null,
+      pollTimer: null,
+      lastUpdatedAt: 0,
       isFirstCloudHydration: true
     };
 
     // ==========================================
-    // 1. Firebase 雲端初始化與即時監聽 (onSnapshot)
+    // 1. 純標準 HTTPS REST API 雲端引擎（完全繞過 SDK WebChannel / gRPC 逾時限制）
     // ==========================================
-    async function initFirebaseRealtimeSync() {
-      // 優先讀取環境變數 __firebase_config，其次讀取內嵌設定，最後才讀取自訂設定
-      let activeConfig = null;
-      let envSource = 'none';
+    function toFirestoreValue(val) {
+      if (val === null || val === undefined) return { nullValue: null };
+      if (typeof val === 'boolean') return { booleanValue: val };
+      if (typeof val === 'number') {
+        return Number.isInteger(val) ? { integerValue: String(val) } : { doubleValue: val };
+      }
+      if (typeof val === 'string') return { stringValue: val };
+      if (Array.isArray(val)) {
+        return { arrayValue: { values: val.map(toFirestoreValue) } };
+      }
+      if (typeof val === 'object') {
+        const fields = {};
+        for (const k of Object.keys(val)) {
+          fields[k] = toFirestoreValue(val[k]);
+        }
+        return { mapValue: { fields } };
+      }
+      return { stringValue: String(val) };
+    }
 
+    function fromFirestoreValue(fv) {
+      if (!fv || typeof fv !== 'object') return null;
+      if ('stringValue' in fv) return fv.stringValue;
+      if ('integerValue' in fv) return Number(fv.integerValue);
+      if ('doubleValue' in fv) return Number(fv.doubleValue);
+      if ('booleanValue' in fv) return Boolean(fv.booleanValue);
+      if ('nullValue' in fv) return null;
+      if ('arrayValue' in fv) {
+        return (fv.arrayValue.values || []).map(fromFirestoreValue);
+      }
+      if ('mapValue' in fv) {
+        const obj = {};
+        const fields = fv.mapValue.fields || {};
+        for (const k of Object.keys(fields)) {
+          obj[k] = fromFirestoreValue(fields[k]);
+        }
+        return obj;
+      }
+      return null;
+    }
+
+    function parseFirestoreDoc(docJson) {
+      if (!docJson || !docJson.fields) return null;
+      const result = {};
+      for (const k of Object.keys(docJson.fields)) {
+        result[k] = fromFirestoreValue(docJson.fields[k]);
+      }
+      return result;
+    }
+
+    function buildFirestoreDocFields(payloadObj) {
+      const fields = {};
+      for (const k of Object.keys(payloadObj)) {
+        fields[k] = toFirestoreValue(payloadObj[k]);
+      }
+      return { fields };
+    }
+
+    async function fetchCloudDocumentREST(isBackgroundPoll = false) {
+      if (!state.restBaseUrl) return false;
+      try {
+        const url = `${state.restBaseUrl}?key=${encodeURIComponent(state.activeConfig.apiKey)}&_t=${Date.now()}`;
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' }
+        });
+
+        if (res.status === 404) {
+          // 雲端尚無文件，初始化寫入預設價目表
+          await writeCloudDocumentREST(true);
+          return true;
+        }
+
+        if (!res.ok) {
+          const errText = await res.text();
+          let errReason = `HTTP ${res.status}`;
+          try {
+            const errObj = JSON.parse(errText);
+            if (errObj.error && errObj.error.status) errReason = errObj.error.status;
+            else if (errObj.error && errObj.error.message) errReason = errObj.error.message.slice(0, 32);
+          } catch (e) {}
+          throw new Error(errReason);
+        }
+
+        const rawDoc = await res.json();
+        const cloudPayload = parseFirestoreDoc(rawDoc);
+        if (!cloudPayload) return false;
+
+        const incomingUpdatedAt = Number(cloudPayload.updatedAt || 0);
+        const hasNewerData = incomingUpdatedAt > state.lastUpdatedAt || state.isFirstCloudHydration;
+
+        if (hasNewerData && !state.isAdminMode) {
+          state.lastUpdatedAt = incomingUpdatedAt;
+          state.data = {
+            adminPin: cloudPayload.adminPin || "8888",
+            profile: cloudPayload.profile || DEFAULT_DATA.profile,
+            categories: cloudPayload.categories || DEFAULT_DATA.categories,
+            services: cloudPayload.services || DEFAULT_DATA.services,
+            rules: cloudPayload.rules || DEFAULT_DATA.rules
+          };
+
+          Object.keys(state.selectedMap).forEach(srvId => {
+            if (!state.data.services.some(s => s.id === srvId)) {
+              delete state.selectedMap[srvId];
+            }
+          });
+
+          applyProfileToDOM();
+          renderAll();
+
+          if (!state.isFirstCloudHydration && isBackgroundPoll) {
+            showToast('價目表已即時更新為最新狀態 ✨');
+          }
+        } else if (state.isFirstCloudHydration) {
+          state.lastUpdatedAt = incomingUpdatedAt;
+        }
+
+        state.cloudConnected = true;
+        state.isFirstCloudHydration = false;
+        setCloudStatusUI('online', '雲端即時同步中');
+        updateCloudConfigModalStatus('已透過標準 HTTPS REST API 成功連線至 Firebase Firestore 雲端資料庫！任何修改都會即時同步給所有客人手機。', true);
+        return true;
+      } catch (err) {
+        console.error('REST API 讀取失敗:', err);
+        state.cloudConnected = false;
+        const msg = err && err.message ? err.message : '網路異常';
+        setCloudStatusUI('error', `連線異常 (${msg})`);
+        updateCloudConfigModalStatus(`REST API 連線發生錯誤：${msg}`, false);
+        return false;
+      }
+    }
+
+    async function writeCloudDocumentREST(isInitialSeed = false) {
+      if (!state.restBaseUrl) return false;
+      const nowTs = Date.now();
+      const payload = {
+        adminPin: state.data.adminPin || "8888",
+        profile: state.data.profile,
+        categories: state.data.categories,
+        services: state.data.services,
+        rules: state.data.rules,
+        updatedAt: nowTs
+      };
+
+      const url = `${state.restBaseUrl}?key=${encodeURIComponent(state.activeConfig.apiKey)}`;
+      const res = await fetch(url, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(buildFirestoreDocFields(payload))
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        let errReason = `HTTP ${res.status}`;
+        try {
+          const errObj = JSON.parse(errText);
+          if (errObj.error && errObj.error.status) errReason = errObj.error.status;
+        } catch (e) {}
+        throw new Error(errReason);
+      }
+
+      state.lastUpdatedAt = nowTs;
+      state.cloudConnected = true;
+      if (isInitialSeed) state.isFirstCloudHydration = false;
+      setCloudStatusUI('online', '雲端即時同步中');
+      updateCloudConfigModalStatus('已透過標準 HTTPS REST API 成功連線至 Firebase Firestore 雲端資料庫！任何修改都會即時同步給所有客人手機。', true);
+      return true;
+    }
+
+    async function initFirebaseRealtimeSync() {
+      let activeConfig = null;
       if (typeof __firebase_config !== 'undefined' && __firebase_config) {
         try {
           activeConfig = JSON.parse(__firebase_config);
-          envSource = 'platform';
-        } catch (e) {
-          console.error('解析平台 Firebase 設定失敗:', e);
-        }
+        } catch (e) {}
       } else if (EMBEDDED_FIREBASE_CONFIG && EMBEDDED_FIREBASE_CONFIG.apiKey) {
         activeConfig = EMBEDDED_FIREBASE_CONFIG;
-        envSource = 'embedded';
       } else {
         const customStr = localStorage.getItem('nail_studio_custom_firebase_cfg');
         if (customStr) {
           try {
             activeConfig = JSON.parse(customStr);
-            envSource = 'custom';
           } catch (e) {
             localStorage.removeItem('nail_studio_custom_firebase_cfg');
           }
         }
       }
 
-      if (!activeConfig || !activeConfig.apiKey) {
+      if (!activeConfig || !activeConfig.apiKey || !activeConfig.projectId) {
         setCloudStatusUI('offline', '單機預覽模式');
-        updateCloudConfigModalStatus('目前尚未綁定外部 Firebase 專案（在目前預覽環境以外的靜態空間開啟時，請於下方貼入您的 Firebase Config 即可開啟雲端即時同步）。', false);
+        updateCloudConfigModalStatus('目前尚未綁定外部 Firebase 專案，請於下方貼入您的 Firebase Config 即可開啟雲端即時同步。', false);
         return;
       }
 
-      try {
-        setCloudStatusUI('connecting', '雲端連線中...');
-        const appName = 'tiora_' + (activeConfig.projectId || 'default');
-        const existingApp = getApps().find(a => a.name === appName);
-        const app = existingApp ? existingApp : initializeApp(activeConfig, appName);
-        state.auth = getAuth(app);
-        try {
-          state.db = initializeFirestore(app, { experimentalForceLongPolling: true });
-        } catch (fsErr) {
-          state.db = getFirestore(app);
+      state.activeConfig = activeConfig;
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'nail-studio-public';
+      state.restBaseUrl = `https://firestore.googleapis.com/v1/projects/${activeConfig.projectId}/databases/(default)/documents/artifacts/${appId}/public/data/pricelist_config/main`;
+
+      setCloudStatusUI('connecting', '雲端連線中...');
+      await fetchCloudDocumentREST(false);
+
+      // 每 5 秒透過標準 HTTPS GET 自動同步最新雲端變更（輕量且完全不受 WebChannel 阻擋）
+      if (state.pollTimer) clearInterval(state.pollTimer);
+      state.pollTimer = setInterval(() => {
+        if (!state.isAdminMode && document.visibilityState === 'visible') {
+          fetchCloudDocumentREST(true);
         }
-
-        // 遵守規則 3：先完成驗證再存取 Firestore
-        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && envSource === 'platform') {
-          const cred = await signInWithCustomToken(state.auth, __initial_auth_token);
-          state.user = cred.user;
-        } else {
-          const cred = await signInAnonymously(state.auth);
-          state.user = cred.user;
-        }
-
-        if (!state.user) return;
-
-        // 遵守規則 1：嚴格使用 /artifacts/{appId}/public/data/{collectionName} 公開路徑讓所有客人即時讀取
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'nail-studio-public';
-        state.docRef = doc(state.db, 'artifacts', appId, 'public', 'data', 'pricelist_config', 'main');
-
-        // 檢查雲端是否已有初始資料，若無則寫入預設完整價目表
-        const initialSnap = await getDoc(state.docRef);
-        if (!initialSnap.exists()) {
-          await setDoc(state.docRef, {
-            ...state.data,
-            updatedAt: Date.now()
-          });
-        }
-
-        // 取消舊監聽器（若有）並建立即時監聽器 onSnapshot
-        if (state.unsubscribeSnapshot) {
-          state.unsubscribeSnapshot();
-        }
-
-        state.unsubscribeSnapshot = onSnapshot(
-          state.docRef,
-          (snapshot) => {
-            if (!snapshot.exists()) return;
-            const cloudPayload = snapshot.data();
-
-            // 更新本地資料狀態
-            state.data = {
-              adminPin: cloudPayload.adminPin || "8888",
-              profile: cloudPayload.profile || DEFAULT_DATA.profile,
-              categories: cloudPayload.categories || DEFAULT_DATA.categories,
-              services: cloudPayload.services || DEFAULT_DATA.services,
-              rules: cloudPayload.rules || DEFAULT_DATA.rules
-            };
-
-            // 清理已不存在於雲端的客戶勾選項目
-            Object.keys(state.selectedMap).forEach(srvId => {
-              if (!state.data.services.some(s => s.id === srvId)) {
-                delete state.selectedMap[srvId];
-              }
-            });
-
-            state.cloudConnected = true;
-            setCloudStatusUI('online', '雲端即時同步中');
-            updateCloudConfigModalStatus('已成功連線至 Firebase Firestore 雲端資料庫！任何修改都會即時同步給所有開啟網頁的客人。', true);
-
-            applyProfileToDOM();
-            renderAll();
-
-            if (!state.isFirstCloudHydration && !state.isAdminMode) {
-              showToast('價目表已即時更新為最新狀態 ✨');
-            }
-            state.isFirstCloudHydration = false;
-          },
-          (error) => {
-            console.error('Firestore 即時監聽錯誤:', error);
-            state.cloudConnected = false;
-            setCloudStatusUI('error', '雲端連線異常');
-          }
-        );
-      } catch (err) {
-        console.error('Firebase 初始化失敗:', err);
-        state.cloudConnected = false;
-        const errCode = err && err.code ? ` (${err.code})` : '';
-        setCloudStatusUI('error', '連線設定有誤' + errCode);
-        updateCloudConfigModalStatus('連線發生錯誤：' + (err && err.message ? err.message : '未知錯誤'), false);
-      }
+      }, 5000);
     }
 
-    // 將目前資料即時寫入雲端 Firestore
+    // 將目前資料即時寫入雲端 Firestore (REST PATCH)
     async function syncDataToCloud(customSuccessMsg = '已同步至雲端，所有客人端已即時更新 ✨') {
-      // 同時保留一份本地備份
       try {
         localStorage.setItem('nail_studio_backup_v5', JSON.stringify(state.data));
       } catch (e) {}
 
-      if (!state.db || !state.docRef || !state.user) {
+      if (!state.restBaseUrl || !state.activeConfig) {
         showToast('已儲存於本地預覽（請設定 Firebase Config 以啟用跨裝置即時同步）');
         return;
       }
 
       try {
         setCloudStatusUI('connecting', '同步上傳中...');
-        await setDoc(state.docRef, {
-          adminPin: state.data.adminPin || "8888",
-          profile: state.data.profile,
-          categories: state.data.categories,
-          services: state.data.services,
-          rules: state.data.rules,
-          updatedAt: Date.now()
-        });
-        setCloudStatusUI('online', '雲端即時同步中');
+        await writeCloudDocumentREST(false);
         if (customSuccessMsg) {
           showToast(customSuccessMsg);
         }
       } catch (err) {
-        console.error('寫入雲端失敗:', err);
-        setCloudStatusUI('error', '同步失敗');
-        showToast('雲端同步失敗，請檢查網路或 Firebase 權限規則');
+        console.error('REST API 寫入雲端失敗:', err);
+        const msg = err && err.message ? err.message : '同步失敗';
+        setCloudStatusUI('error', `同步失敗 (${msg})`);
+        showToast(`雲端同步失敗 (${msg})，請確認 Firestore 安全性規則`);
       }
     }
 
@@ -1682,7 +1756,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       lines.push(`💅 是否需要卸甲（本店/他店）：`);
       lines.push(`（已詳閱預約須知，謝謝！）`);
 
-      const textToCopy = lines.join('\n');
+      const textToCopy = lines.join('
+');
       const ta = document.createElement('textarea');
       ta.value = textToCopy;
       ta.style.position = 'fixed';
@@ -2206,7 +2281,6 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         }
       }
 
-      // 暫時還原為乾淨客戶端畫面再擷取原始碼
       const wasAdmin = state.isAdminMode;
       if (wasAdmin) {
         state.isAdminMode = false;
@@ -2220,7 +2294,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         renderAll();
       }
 
-      let htmlOut = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
+      let htmlOut = '<!DOCTYPE html>
+' + document.documentElement.outerHTML;
       if (configToEmbed) {
         htmlOut = htmlOut.replace(
           /const EMBEDDED_FIREBASE_CONFIG = .*?;/,
@@ -2228,7 +2303,8 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         );
       }
       htmlOut = htmlOut.replace(
-        /const DEFAULT_DATA = \{[\s\S]*?\n    \};/,
+        /const DEFAULT_DATA = \{[\s\S]*?
+    \};/,
         `const DEFAULT_DATA = ${JSON.stringify(state.data, null, 2)};`
       );
 
