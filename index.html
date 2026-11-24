@@ -910,7 +910,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
        Firebase Firestore 即時同步與核心應用程式邏輯
        ========================================== -->
   <script type="module">
-    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { initializeApp, getApps, getApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
     import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
     import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
@@ -1101,7 +1101,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
     // 1. Firebase 雲端初始化與即時監聽 (onSnapshot)
     // ==========================================
     async function initFirebaseRealtimeSync() {
-      // 優先讀取環境變數 __firebase_config，其次讀取內嵌或自訂設定
+      // 優先讀取環境變數 __firebase_config，其次讀取內嵌設定，最後才讀取自訂設定
       let activeConfig = null;
       let envSource = 'none';
 
@@ -1112,7 +1112,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         } catch (e) {
           console.error('解析平台 Firebase 設定失敗:', e);
         }
-      } else if (EMBEDDED_FIREBASE_CONFIG) {
+      } else if (EMBEDDED_FIREBASE_CONFIG && EMBEDDED_FIREBASE_CONFIG.apiKey) {
         activeConfig = EMBEDDED_FIREBASE_CONFIG;
         envSource = 'embedded';
       } else {
@@ -1121,7 +1121,9 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
           try {
             activeConfig = JSON.parse(customStr);
             envSource = 'custom';
-          } catch (e) {}
+          } catch (e) {
+            localStorage.removeItem('nail_studio_custom_firebase_cfg');
+          }
         }
       }
 
@@ -1133,7 +1135,9 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
 
       try {
         setCloudStatusUI('connecting', '雲端連線中...');
-        const app = initializeApp(activeConfig);
+        const appName = 'tiora_' + (activeConfig.projectId || 'default');
+        const existingApp = getApps().find(a => a.name === appName);
+        const app = existingApp ? existingApp : initializeApp(activeConfig, appName);
         state.auth = getAuth(app);
         state.db = getFirestore(app);
 
@@ -1209,7 +1213,9 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       } catch (err) {
         console.error('Firebase 初始化失敗:', err);
         state.cloudConnected = false;
-        setCloudStatusUI('error', '連線設定有誤');
+        const errCode = err && err.code ? ` (${err.code})` : '';
+        setCloudStatusUI('error', '連線設定有誤' + errCode);
+        updateCloudConfigModalStatus('連線發生錯誤：' + (err && err.message ? err.message : '未知錯誤'), false);
       }
     }
 
