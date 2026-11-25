@@ -1323,7 +1323,9 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       renderPricelist();
       renderBookingRules();
       updateCalculatorSummary();
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') {
+        lucide.createIcons();
+      }
     }
 
     // ==========================================
@@ -1575,7 +1577,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       }
       renderPricelist();
       updateCalculatorSummary();
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
     }
 
     function adjustServiceQty(serviceId, delta) {
@@ -1588,14 +1590,14 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       }
       renderPricelist();
       updateCalculatorSummary();
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
     }
 
     function clearAllSelections() {
       state.selectedMap = {};
       renderPricelist();
       updateCalculatorSummary();
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
       showToast('已清除所有試算項目');
     }
 
@@ -1679,8 +1681,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       lines.push(`💅 是否需要卸甲（本店/他店）：`);
       lines.push(`（已詳閱預約須知，謝謝！）`);
 
-      const textToCopy = lines.join('
-');
+      const textToCopy = lines.join('\n');
       const ta = document.createElement('textarea');
       ta.value = textToCopy;
       ta.style.position = 'fixed';
@@ -1709,7 +1710,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       document.getElementById('admin-pin-error').classList.add('hidden');
       document.getElementById('admin-login-modal').classList.remove('hidden');
       setTimeout(() => document.getElementById('admin-pin-input').focus(), 100);
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
     }
 
     function closeAdminLoginModal() {
@@ -1815,7 +1816,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         if (!clean) {
           showToast('項目名稱不可為空');
           renderPricelist();
-          lucide.createIcons();
+          if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
           return;
         }
         srv.name = clean;
@@ -1826,7 +1827,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         if (isNaN(num) || num < 0) {
           showToast('請輸入有效的金額數字');
           renderPricelist();
-          lucide.createIcons();
+          if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
           return;
         }
         srv.price = num;
@@ -1835,7 +1836,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         if (isNaN(mins) || mins <= 0) {
           showToast('請輸入有效的分鐘數');
           renderPricelist();
-          lucide.createIcons();
+          if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
           return;
         }
         srv.duration = mins;
@@ -1849,7 +1850,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       if (!srv) return;
       srv.priceUp = !srv.priceUp;
       renderPricelist();
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
       syncDataToCloud(srv.priceUp ? '已開啟「起」字並同步至雲端' : '已關閉「起」字並同步至雲端');
     }
 
@@ -1913,7 +1914,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         document.getElementById('edit-category-subtitle').value = '';
       }
       modal.classList.remove('hidden');
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
     }
 
     function closeCategoryModal() {
@@ -2015,7 +2016,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
       }
 
       modal.classList.remove('hidden');
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
     }
 
     function closeServiceModal() {
@@ -2150,7 +2151,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
 
     function openCloudConfigModal() {
       document.getElementById('cloud-config-modal').classList.remove('hidden');
-      lucide.createIcons();
+      if (window.lucide && typeof lucide.createIcons === 'function') lucide.createIcons();
     }
 
     function closeCloudConfigModal() {
@@ -2211,8 +2212,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         renderAll();
       }
 
-      let htmlOut = '<!DOCTYPE html>
-' + document.documentElement.outerHTML;
+      let htmlOut = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
       if (configToEmbed) {
         htmlOut = htmlOut.replace(
           /const EMBEDDED_FIREBASE_CONFIG = .*?;/,
@@ -2220,8 +2220,7 @@ url:e,reason:"blocked_domain_not_allowlisted"},b.parentOrigin);throw new DOMExce
         );
       }
       htmlOut = htmlOut.replace(
-        /const DEFAULT_DATA = \{[\s\S]*?
-    \};/,
+        /const DEFAULT_DATA = \{[\s\S]*?\n    \};/,
         `const DEFAULT_DATA = ${JSON.stringify(state.data, null, 2)};`
       );
 
